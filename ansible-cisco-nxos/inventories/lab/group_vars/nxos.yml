@@ -1,0 +1,19 @@
+---
+# NX-OS Group Variables
+# These variables apply to all hosts in the nxos group
+
+# Connection settings
+ansible_connection: ansible.netcommon.network_cli
+ansible_network_os: cisco.nxos.nxos
+
+# Credentials loaded from environment variables
+# NEVER hard-code credentials in version control
+ansible_user: "{{ lookup('ansible.builtin.env', 'NXOS_USERNAME', default='') }}"
+ansible_password: "{{ lookup('ansible.builtin.env', 'NXOS_PASSWORD', default='') }}"
+
+# Timeout settings (in seconds)
+ansible_command_timeout: 60
+ansible_connect_timeout: 30
+
+# Disable privilege escalation for network devices
+ansible_become: false

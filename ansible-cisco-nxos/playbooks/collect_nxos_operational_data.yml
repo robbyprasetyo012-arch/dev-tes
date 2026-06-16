@@ -1,0 +1,203 @@
+---
+# Playbook: Collect NX-OS Operational Data
+# READ-ONLY: This playbook only executes show commands and collects facts.
+# It does NOT modify any device configuration or state.
+
+- name: Collect operational data from Cisco Nexus NX-OS switches
+  hosts: nxos
+  gather_facts: false
+  # Do not mark any tasks as changed - this is read-only collection
+  check_mode: false
+
+  vars:
+    # Output directory base path (relative to project root)
+    output_base_dir: "{{ playbook_dir }}/../output"
+    # Timestamp for this collection run
+    collection_timestamp: "{{ ansible_date_time.iso8601_basic_short | default(lookup('pipe', 'date +%Y%m%d_%H%M%S'), wantlist=False) }}"
+
+    # List of standard show commands (always executed)
+    standard_commands:
+      - "show hostname"
+      - "show version"
+      - "show module"
+      - "show interface status"
+      - "show interface brief"
+      - "show port-channel summary"
+      - "show spanning-tree summary"
+      - "show ip route summary"
+
+    # List of optional show commands (may fail if feature not enabled)
+    optional_commands:
+      - "show vpc brief"
+      - "show bgp l2vpn evpn summary"
+      - "show logging last 100"
+
+  tasks:
+    # =========================================================================
+    # Task: Collect minimum NX-OS facts
+    # =========================================================================
+    - name: Collect minimum NX-OS facts
+      cisco.nxos.nxos_facts:
+        gather_network_resources: false
+        gather_subset:
+          - min
+      register: nxos_facts_result
+      ignore_errors: true
+      no_log: true
+
+    # =========================================================================
+    # Task: Initialize command output storage
+    # =========================================================================
+    - name: Initialize command outputs dictionary
+      ansible.builtin.set_fact:
+        command_outputs: {}
+        command_failures: []
+
+    # =========================================================================
+    # Task: Execute standard show commands
+    # =========================================================================
+    - name: Execute standard show commands
+      cisco.nxos.nxos_command:
+        commands: "{{ item }}"
+      loop: "{{ standard_commands }}"
+      loop_control:
+        label: "{{ item }}"
+      ignore_errors: true
+      no_log: true
+      register: standard_commands_results
+
+    # =========================================================================
+    # Task: Process standard command results
+    # =========================================================================
+    - name: Store standard command outputs
+      ansible.builtin.set_fact:
+        command_outputs: "{{ command_outputs | combine({item.item: {'stdout': item.stdout, 'stdout_lines': item.stdout_lines}}) }}"
+      loop: "{{ standard_commands_results.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.stdout is defined
+
+    - name: Record standard command failures
+      ansible.builtin.set_fact:
+        command_failures: "{{ command_failures + [{'command': item.item, 'error': item.msg | default('Unknown error'), 'type': 'standard'}] }}"
+      loop: "{{ standard_commands_results.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.failed | default(false)
+
+    # =========================================================================
+    # Task: Execute optional show commands (vPC, EVPN, logging)
+    # =========================================================================
+    - name: Execute optional show commands
+      cisco.nxos.nxos_command:
+        commands: "{{ item }}"
+      loop: "{{ optional_commands }}"
+      loop_control:
+        label: "{{ item }}"
+      ignore_errors: true
+      no_log: true
+      register: optional_commands_results
+
+    # =========================================================================
+    # Task: Process optional command results
+    # =========================================================================
+    - name: Store optional command outputs
+      ansible.builtin.set_fact:
+        command_outputs: "{{ command_outputs | combine({item.item: {'stdout': item.stdout, 'stdout_lines': item.stdout_lines}}) }}"
+      loop: "{{ optional_commands_results.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.stdout is defined
+
+    - name: Record optional command failures
+      ansible.builtin.set_fact:
+        command_failures: "{{ command_failures + [{'command': item.item, 'error': item.msg | default('Unknown error'), 'type': 'optional'}] }}"
+      loop: "{{ optional_commands_results.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.failed | default(false)
+
+    # =========================================================================
+    # Task: Create output directory structure
+    # =========================================================================
+    - name: Create output directory for host
+      ansible.builtin.file:
+        path: "{{ output_base_dir }}/{{ inventory_hostname_short }}/{{ collection_timestamp }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      become: false
+
+    # =========================================================================
+    # Task: Save collected facts to file
+    # =========================================================================
+    - name: Save collected NX-OS facts
+      ansible.builtin.copy:
+        content: "{{ nxos_facts_result.ansible_facts | to_nice_yaml(indent=2) }}"
+        dest: "{{ output_base_dir }}/{{ inventory_hostname_short }}/{{ collection_timestamp }}/facts.yml"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+      when: nxos_facts_result.ansible_facts is defined
+
+    # =========================================================================
+    # Task: Save all command outputs to file
+    # =========================================================================
+    - name: Save command outputs
+      ansible.builtin.copy:
+        content: "{{ command_outputs | to_nice_yaml(indent=2) }}"
+        dest: "{{ output_base_dir }}/{{ inventory_hostname_short }}/{{ collection_timestamp }}/command_output.yml"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+
+    # =========================================================================
+    # Task: Save command failures to file
+    # =========================================================================
+    - name: Save command failures
+      ansible.builtin.copy:
+        content: "{{ command_failures | to_nice_yaml(indent=2) }}"
+        dest: "{{ output_base_dir }}/{{ inventory_hostname_short }}/{{ collection_timestamp }}/failures.yml"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+
+    # =========================================================================
+    # Task: Generate and save collection summary
+    # =========================================================================
+    - name: Generate collection summary
+      ansible.builtin.set_fact:
+        collection_summary:
+          hostname: "{{ inventory_hostname }}"
+          inventory_hostname_short: "{{ inventory_hostname_short }}"
+          collection_timestamp: "{{ collection_timestamp }}"
+          facts_collected: "{{ nxos_facts_result.ansible_facts is defined }}"
+          total_commands_executed: "{{ (standard_commands | length) + (optional_commands | length) }}"
+          successful_commands: "{{ command_outputs | length }}"
+          failed_commands: "{{ command_failures | length }}"
+          standard_commands_count: "{{ standard_commands | length }}"
+          optional_commands_count: "{{ optional_commands | length }}"
+          failed_optional_commands: "{{ command_failures | selectattr('type', 'equalto', 'optional') | list | length }}"
+          failed_standard_commands: "{{ command_failures | selectattr('type', 'equalto', 'standard') | list | length }}"
+          output_directory: "{{ output_base_dir }}/{{ inventory_hostname_short }}/{{ collection_timestamp }}"
+
+    - name: Save collection summary
+      ansible.builtin.copy:
+        content: "{{ collection_summary | to_nice_yaml(indent=2) }}"
+        dest: "{{ output_base_dir }}/{{ inventory_hostname_short }}/{{ collection_timestamp }}/summary.yml"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+
+    # =========================================================================
+    # Task: Display summary to console
+    # =========================================================================
+    - name: Display collection summary
+      ansible.builtin.debug:
+        msg:
+          - "Collection completed for {{ inventory_hostname }}"
+          - "Output saved to: {{ output_base_dir }}/{{ inventory_hostname_short }}/{{ collection_timestamp }}"
+          - "Facts collected: {{ nxos_facts_result.ansible_facts is defined }}"
+          - "Successful commands: {{ command_outputs | length }}"
+          - "Failed commands: {{ command_failures | length }}"
+      no_log: false
